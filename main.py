@@ -69,11 +69,12 @@ async def websocket_endpoint(websocket: WebSocket):
             most_common_label, count = label_counts.most_common(1)[0]
 
             # Send alert if a suspicious label appears frequently
-            if most_common_label != "Normal_Videos" and count >= 7:  # Threshold for anomaly
+            if count >= 7:  # Threshold for anomaly
                 alert_message = f"ALERT: High occurrence of '{most_common_label}' detected!"
                 await websocket.send_json({"alert": alert_message})
 
             print(f"Frame classified as: {predicted_label}")
+            await websocket.send_json({"predicted_label": predicted_label})
 
         except Exception as e:
             print(f"WebSocket error: {e}")
