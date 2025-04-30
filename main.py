@@ -1,3 +1,4 @@
+import json
 import os
 
 from fastapi import FastAPI, WebSocket
@@ -32,49 +33,70 @@ frame_predictions = []
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
 
+    camera_id = None  # store last received camera ID
+
     while True:
         try:
-            # Receive image bytes from the frontend
-            data = await websocket.receive_bytes()
+            message = await websocket.receive()
 
-            # Convert bytes to OpenCV image
-            np_arr = np.frombuffer(data, np.uint8)
-            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if "text" in message:
+                # Expecting camera ID JSON message
+                data = message["text"]
+                try:
+                    camera_info = json.loads(data)
+                    camera_id = str(camera_info.get("camera_id", "unknown"))
+                except Exception as e:
+                    print("Failed to parse camera ID JSON:", e)
+                    continue
 
-            if frame is None:
-                print("Error decoding frame")
-                continue
+            elif "bytes" in message:
+                if camera_id is None:
+                    print("Camera ID not received before frame")
+                    continue
 
-            # Resize frame for model input
-            frame_resized = cv2.resize(frame, (224, 224))
+                # Convert bytes to OpenCV image
+                np_arr = np.frombuffer(message["bytes"], np.uint8)
+                frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-            # Preprocess for model
-            input_tensor = processor(images=frame_resized, return_tensors="pt").pixel_values
+                if frame is None:
+                    print("Error decoding frame")
+                    continue
 
-            # Run inference
-            with torch.no_grad():
-                output = model(pixel_values=input_tensor)
+                # Now we are guaranteed to have a valid frame
+                frame_resized = cv2.resize(frame, (224, 224))
 
-            # Get predicted label ID
-            predicted_id = torch.argmax(output.logits, dim=-1).item()
-            predicted_label = id_to_label[predicted_id]
+                # Preprocess for model
+                input_tensor = processor(images=frame_resized, return_tensors="pt").pixel_values
 
-            # Store prediction for trend detection
-            frame_predictions.append(predicted_label)
-            if len(frame_predictions) > 10:  # Keep last 10 predictions
-                frame_predictions.pop(0)
+                # Run inference
+                with torch.no_grad():
+                    output = model(pixel_values=input_tensor)
 
-            # Count occurrences of labels in recent frames
-            label_counts = Counter(frame_predictions)
-            most_common_label, count = label_counts.most_common(1)[0]
+                # Get predicted label ID
+                predicted_id = torch.argmax(output.logits, dim=-1).item()
+                predicted_label = id_to_label[predicted_id]
 
-            # Send alert if a suspicious label appears frequently
-            if count >= 7:  # Threshold for anomaly
-                alert_message = f"ALERT: High occurrence of '{most_common_label}' detected!"
-                await websocket.send_json({"alert": alert_message})
+                # Store prediction for trend detection
+                frame_predictions.append(predicted_label)
+                if len(frame_predictions) > 10:  # Keep last 10 predictions
+                    frame_predictions.pop(0)
 
-            print(f"Frame classified as: {predicted_label}")
-            await websocket.send_json({"predicted_label": predicted_label})
+                # Count occurrences of labels in recent frames
+                label_counts = Counter(frame_predictions)
+                most_common_label, count = label_counts.most_common(1)[0]
+
+                if count >= 7 and most_common_label != 'Normal_Videos':
+                    alert_message = f"ALERT: Camera: '{camera_id}' High occurrence of '{most_common_label}' detected!"
+                    await websocket.send_json({
+                        "alert": alert_message,
+                        "camera_id": camera_id
+                    })
+
+                print(f"Camera {camera_id} Frame classified as: {predicted_label}")
+                await websocket.send_json({
+                    "predicted_label": predicted_label,
+                    "camera_id": camera_id
+                })
 
         except Exception as e:
             print(f"WebSocket error: {e}")
