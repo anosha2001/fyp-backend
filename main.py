@@ -7,6 +7,8 @@ import numpy as np
 import torch
 from transformers import AutoProcessor, AutoModelForImageClassification
 from collections import Counter
+from typing import Dict
+from datetime import datetime
 
 app = FastAPI()
 
@@ -25,15 +27,15 @@ id_to_label = {
     9: 'Robbery', 10: 'Shooting', 11: 'Shoplifting', 12: 'Stealing', 13: 'Vandalism'
 }
 
-# Store past predictions for alert generation
-frame_predictions = []
+# Store past predictions for alert generation - A dictionary to store frame predictions per camera
+frame_predictions_dict: Dict[str, list] = {}
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
 
-    camera_id = None  # store last received camera ID
+    camera_id = None  # Store the last received camera ID
 
     while True:
         try:
@@ -45,6 +47,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     camera_info = json.loads(data)
                     camera_id = str(camera_info.get("camera_id", "unknown"))
+
+                    # Initialize the camera's frame prediction list if not already done
+                    if camera_id not in frame_predictions_dict:
+                        frame_predictions_dict[camera_id] = []
+
                 except Exception as e:
                     print("Failed to parse camera ID JSON:", e)
                     continue
@@ -62,6 +69,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     print("Error decoding frame")
                     continue
 
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 # Now we are guaranteed to have a valid frame
                 frame_resized = cv2.resize(frame, (224, 224))
 
@@ -77,25 +85,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 predicted_label = id_to_label[predicted_id]
 
                 # Store prediction for trend detection
-                frame_predictions.append(predicted_label)
-                if len(frame_predictions) > 10:  # Keep last 10 predictions
-                    frame_predictions.pop(0)
+                frame_predictions_dict[camera_id].append(predicted_label)
+                if len(frame_predictions_dict[camera_id]) > 10:  # Keep last 10 predictions
+                    frame_predictions_dict[camera_id].pop(0)
 
                 # Count occurrences of labels in recent frames
-                label_counts = Counter(frame_predictions)
+                label_counts = Counter(frame_predictions_dict[camera_id])
                 most_common_label, count = label_counts.most_common(1)[0]
 
                 if count >= 7 and most_common_label != 'Normal_Videos':
-                    alert_message = f"ALERT: Camera: '{camera_id}' High occurrence of '{most_common_label}' detected!"
+                    alert_message = f"ALERT: Camera: '{camera_id}''{most_common_label}' detected!"
                     await websocket.send_json({
                         "alert": alert_message,
-                        "camera_id": camera_id
+                        "camera_id": camera_id,  # Include camera ID here
+                        "timestamp": timestamp
                     })
 
                 print(f"Camera {camera_id} Frame classified as: {predicted_label}")
                 await websocket.send_json({
                     "predicted_label": predicted_label,
-                    "camera_id": camera_id
+                    "camera_id": camera_id,
+                    "timestamp": timestamp
                 })
 
         except Exception as e:
