@@ -53,7 +53,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     if camera_id not in frame_predictions_dict:
                         frame_predictions_dict[camera_id] = []
                     if camera_id not in last_sent_alerts:
-                        last_sent_alerts[camera_id] = None
+                        last_sent_alerts[camera_id] = "empty"
                 except Exception as e:
                     print("Failed to parse camera ID JSON:", e)
                     continue
@@ -132,6 +132,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     # print(f"[{camera_id}] Activity: {predicted_label}, Objects: {detected_objects}, Alert: {combined_alert}")
                     print(f"[{camera_id}] Alert: {combined_alert}")
+                    print(last_sent_alerts)
                     await websocket.send_json(response)
 
         except Exception as e:
