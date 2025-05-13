@@ -11,8 +11,6 @@ from fastapi import FastAPI, WebSocket
 from transformers import AutoProcessor, AutoModelForImageClassification
 from ultralytics import YOLO
 
-import firebase_admin
-from firebase_admin import credentials, firestore
 
 app = FastAPI()
 
@@ -38,12 +36,6 @@ weapon_classes_to_alert = {'pistol', 'knife'}
 frame_predictions_dict: Dict[str, list] = {}
 last_sent_alerts: Dict[str, str] = {}  # Tracks last alert per camera
 
-
-# === Firebase Initialization ===
-firebase_path = os.path.join(os.path.dirname(__file__), "firebase_config.json")
-cred = credentials.Certificate(firebase_path)
-firebase_admin.initialize_app(cred)
-db = firestore.client()
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -100,25 +92,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 if count >= 7 and most_common_label != 'Normal_Videos':
                     activity_alert = f"Alert: {most_common_label}"
 
-                    # Save frame locally
-                    timestamp_filename = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    folder_path = os.path.join("saved_frames", camera_id)
-                    os.makedirs(folder_path, exist_ok=True)
-                    frame_filename = f"{timestamp_filename}.jpg"
-                    frame_path = os.path.join(folder_path, frame_filename)
-                    cv2.imwrite(frame_path, frame)
-
-                    print(f"[{camera_id}] Anomalous frame saved to: {os.path.abspath(frame_path)}")
-
-                    # Save metadata to Firebase
-                    data = {
-                        "camera_id": camera_id,
-                        "anomaly": most_common_label,
-                        "timestamp": timestamp,
-                        "frame_path": os.path.abspath(frame_path)
-                    }
-                    db.collection("anomalous_frames").add(data)
-
                 # === YOLO Detection ===
                 yolo_results = yolo_model(frame_resized, verbose=False)
                 detected_objects = []
@@ -157,7 +130,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "alert": combined_alert
                     }
 
-                # print(f"[{camera_id}] Activity: {predicted_label}, Objects: {detected_objects}, Alert: {combined_alert}")
+                    # print(f"[{camera_id}] Activity: {predicted_label}, Objects: {detected_objects}, Alert: {combined_alert}")
                     print(f"[{camera_id}] Alert: {combined_alert}")
                     await websocket.send_json(response)
 
