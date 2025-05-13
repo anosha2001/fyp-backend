@@ -1,57 +1,55 @@
 import json
 import os
+from datetime import datetime
+from collections import Counter
+from typing import Dict
 
-from fastapi import FastAPI, WebSocket
 import cv2
 import numpy as np
 import torch
+from fastapi import FastAPI, WebSocket
 from transformers import AutoProcessor, AutoModelForImageClassification
-from collections import Counter
-from typing import Dict
-from datetime import datetime
+from ultralytics import YOLO
 
 app = FastAPI()
 
-# Load model and processor globally
-MODEL_DIR = os.path.join(os.path.dirname(__file__), "models", "vit")
+# === Load ViT Model ===
+VIT_MODEL_DIR = os.path.join(os.path.dirname(__file__), "models", "vit")
+vit_model = AutoModelForImageClassification.from_pretrained(VIT_MODEL_DIR)
+vit_processor = AutoProcessor.from_pretrained(VIT_MODEL_DIR, use_fast=True)
 
-# Load model and processor globally
-model = AutoModelForImageClassification.from_pretrained(MODEL_DIR)
-processor = AutoProcessor.from_pretrained(MODEL_DIR, use_fast=True)
+# === Load YOLOv8 Model ===
+YOLO_MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "yolov8", "best.pt")
+yolo_model = YOLO(YOLO_MODEL_PATH)
 
-
-# Mapping of IDs to Labels
+# === Label mappings ===
 id_to_label = {
     0: 'Abuse', 1: 'Arrest', 2: 'Arson', 3: 'Assault', 4: 'Burglary',
     5: 'Explosion', 6: 'Fighting', 7: 'Normal_Videos', 8: 'RoadAccidents',
     9: 'Robbery', 10: 'Shooting', 11: 'Shoplifting', 12: 'Stealing', 13: 'Vandalism'
 }
 
-# Store past predictions for alert generation - A dictionary to store frame predictions per camera
-frame_predictions_dict: Dict[str, list] = {}
+weapon_labels = ['pistol', 'smartphone', 'knife', 'monedero', 'billete', 'tarjeta']
+weapon_classes_to_alert = {'pistol', 'knife'}
 
+# For storing last predictions from ViT
+frame_predictions_dict: Dict[str, list] = {}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-
-    camera_id = None  # Store the last received camera ID
+    camera_id = None
 
     while True:
         try:
             message = await websocket.receive()
 
             if "text" in message:
-                # Expecting camera ID JSON message
-                data = message["text"]
                 try:
-                    camera_info = json.loads(data)
+                    camera_info = json.loads(message["text"])
                     camera_id = str(camera_info.get("camera_id", "unknown"))
-
-                    # Initialize the camera's frame prediction list if not already done
                     if camera_id not in frame_predictions_dict:
                         frame_predictions_dict[camera_id] = []
-
                 except Exception as e:
                     print("Failed to parse camera ID JSON:", e)
                     continue
@@ -61,52 +59,71 @@ async def websocket_endpoint(websocket: WebSocket):
                     print("Camera ID not received before frame")
                     continue
 
-                # Convert bytes to OpenCV image
+                # Decode frame
                 np_arr = np.frombuffer(message["bytes"], np.uint8)
                 frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
                 if frame is None:
                     print("Error decoding frame")
                     continue
 
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                # Now we are guaranteed to have a valid frame
                 frame_resized = cv2.resize(frame, (224, 224))
 
-                # Preprocess for model
-                input_tensor = processor(images=frame_resized, return_tensors="pt").pixel_values
-
-                # Run inference
+                # === ViT Classification ===
+                input_tensor = vit_processor(images=frame_resized, return_tensors="pt").pixel_values
                 with torch.no_grad():
-                    output = model(pixel_values=input_tensor)
-
-                # Get predicted label ID
+                    output = vit_model(pixel_values=input_tensor)
                 predicted_id = torch.argmax(output.logits, dim=-1).item()
                 predicted_label = id_to_label[predicted_id]
 
-                # Store prediction for trend detection
                 frame_predictions_dict[camera_id].append(predicted_label)
-                if len(frame_predictions_dict[camera_id]) > 10:  # Keep last 10 predictions
+                if len(frame_predictions_dict[camera_id]) > 10:
                     frame_predictions_dict[camera_id].pop(0)
 
-                # Count occurrences of labels in recent frames
                 label_counts = Counter(frame_predictions_dict[camera_id])
                 most_common_label, count = label_counts.most_common(1)[0]
+                activity_alert = None
 
                 if count >= 7 and most_common_label != 'Normal_Videos':
-                    alert_message = f"ALERT: Camera: '{camera_id}''{most_common_label}' detected!"
-                    await websocket.send_json({
-                        "alert": alert_message,
-                        "camera_id": camera_id,  # Include camera ID here
-                        "timestamp": timestamp
-                    })
+                    activity_alert = f"Suspicious activity detected: {most_common_label}"
 
-                print(f"Camera {camera_id} Frame classified as: {predicted_label}")
-                await websocket.send_json({
-                    "predicted_label": predicted_label,
+                # === YOLO Detection ===
+                yolo_results = yolo_model(frame_resized, verbose=False)
+                detected_objects = []
+                weapon_alert = None
+
+                for result in yolo_results:
+                    if result.boxes is not None:
+                        for cls_id in result.boxes.cls:
+                            label = weapon_labels[int(cls_id)]
+                            detected_objects.append(label)
+
+                weapon_types = set(detected_objects)
+                threatening_weapons = weapon_types.intersection(weapon_classes_to_alert)
+
+                if threatening_weapons:
+                    weapon_alert = f"Weapons detected: {', '.join(threatening_weapons)}"
+
+                # === Combine Response ===
+                combined_alert = None
+                if activity_alert and weapon_alert:
+                    combined_alert = f"{activity_alert} | {weapon_alert}"
+                elif activity_alert:
+                    combined_alert = activity_alert
+                elif weapon_alert:
+                    combined_alert = weapon_alert
+
+                response = {
+                    "timestamp": timestamp,
                     "camera_id": camera_id,
-                    "timestamp": timestamp
-                })
+                    "predicted_activity": predicted_label,
+                    "activity_trend": most_common_label,
+                    "detected_objects": detected_objects,
+                    "alert": combined_alert
+                }
+
+                print(f"[{camera_id}] Activity: {predicted_label}, Objects: {detected_objects}, Alert: {combined_alert}")
+                await websocket.send_json(response)
 
         except Exception as e:
             print(f"WebSocket error: {e}")
