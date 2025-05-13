@@ -36,6 +36,8 @@ weapon_labels = ['pistol', 'smartphone', 'knife', 'monedero', 'billete', 'tarjet
 weapon_classes_to_alert = {'pistol', 'knife'}
 
 frame_predictions_dict: Dict[str, list] = {}
+last_sent_alerts: Dict[str, str] = {}  # Tracks last alert per camera
+
 
 # === Firebase Initialization ===
 firebase_path = os.path.join(os.path.dirname(__file__), "firebase_config.json")
@@ -58,6 +60,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     camera_id = str(camera_info.get("camera_id", "unknown"))
                     if camera_id not in frame_predictions_dict:
                         frame_predictions_dict[camera_id] = []
+                    if camera_id not in last_sent_alerts:
+                        last_sent_alerts[camera_id] = None
                 except Exception as e:
                     print("Failed to parse camera ID JSON:", e)
                     continue
@@ -94,7 +98,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # === Save Anomalous Frame & Store in Firebase ===
                 if count >= 7 and most_common_label != 'Normal_Videos':
-                    activity_alert = f"Suspicious activity detected: {most_common_label}"
+                    activity_alert = f"Alert: {most_common_label}"
 
                     # Save frame locally
                     timestamp_filename = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -141,17 +145,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif weapon_alert:
                     combined_alert = weapon_alert
 
-                response = {
-                    "timestamp": timestamp,
-                    "camera_id": camera_id,
-                    "predicted_activity": predicted_label,
-                    "activity_trend": most_common_label,
-                    "detected_objects": detected_objects,
-                    "alert": combined_alert
-                }
+                if combined_alert != last_sent_alerts.get(camera_id):
+                    last_sent_alerts[camera_id] = combined_alert
 
-                print(f"[{camera_id}] Activity: {predicted_label}, Objects: {detected_objects}, Alert: {combined_alert}")
-                await websocket.send_json(response)
+                    response = {
+                        "timestamp": timestamp,
+                        "camera_id": camera_id,
+                        "predicted_activity": predicted_label,
+                        "activity_trend": most_common_label,
+                        "detected_objects": detected_objects,
+                        "alert": combined_alert
+                    }
+
+                # print(f"[{camera_id}] Activity: {predicted_label}, Objects: {detected_objects}, Alert: {combined_alert}")
+                    print(f"[{camera_id}] Alert: {combined_alert}")
+                    await websocket.send_json(response)
 
         except Exception as e:
             print(f"WebSocket error: {e}")
