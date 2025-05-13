@@ -11,6 +11,9 @@ from fastapi import FastAPI, WebSocket
 from transformers import AutoProcessor, AutoModelForImageClassification
 from ultralytics import YOLO
 
+import firebase_admin
+from firebase_admin import credentials, firestore
+
 app = FastAPI()
 
 # === Load ViT Model ===
@@ -32,8 +35,13 @@ id_to_label = {
 weapon_labels = ['pistol', 'smartphone', 'knife', 'monedero', 'billete', 'tarjeta']
 weapon_classes_to_alert = {'pistol', 'knife'}
 
-# For storing last predictions from ViT
 frame_predictions_dict: Dict[str, list] = {}
+
+# === Firebase Initialization ===
+firebase_path = os.path.join(os.path.dirname(__file__), "firebase_config.json")
+cred = credentials.Certificate(firebase_path)
+firebase_admin.initialize_app(cred)
+db = firestore.client()
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -84,8 +92,28 @@ async def websocket_endpoint(websocket: WebSocket):
                 most_common_label, count = label_counts.most_common(1)[0]
                 activity_alert = None
 
+                # === Save Anomalous Frame & Store in Firebase ===
                 if count >= 7 and most_common_label != 'Normal_Videos':
                     activity_alert = f"Suspicious activity detected: {most_common_label}"
+
+                    # Save frame locally
+                    timestamp_filename = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    folder_path = os.path.join("saved_frames", camera_id)
+                    os.makedirs(folder_path, exist_ok=True)
+                    frame_filename = f"{timestamp_filename}.jpg"
+                    frame_path = os.path.join(folder_path, frame_filename)
+                    cv2.imwrite(frame_path, frame)
+
+                    print(f"[{camera_id}] Anomalous frame saved to: {os.path.abspath(frame_path)}")
+
+                    # Save metadata to Firebase
+                    data = {
+                        "camera_id": camera_id,
+                        "anomaly": most_common_label,
+                        "timestamp": timestamp,
+                        "frame_path": os.path.abspath(frame_path)
+                    }
+                    db.collection("anomalous_frames").add(data)
 
                 # === YOLO Detection ===
                 yolo_results = yolo_model(frame_resized, verbose=False)
@@ -104,7 +132,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if threatening_weapons:
                     weapon_alert = f"Weapons detected: {', '.join(threatening_weapons)}"
 
-                # === Combine Response ===
+                # === Combine Alerts ===
                 combined_alert = None
                 if activity_alert and weapon_alert:
                     combined_alert = f"{activity_alert} | {weapon_alert}"
