@@ -14,7 +14,12 @@ from ultralytics import YOLO
 
 from db import insert_anomaly, fetch_alerts
 
+from db import test_connection
 app = FastAPI()
+
+@app.on_event("startup")
+def startup_event():
+    test_connection()
 
 # === Load Models ===
 VIT_MODEL_DIR = os.path.join(os.path.dirname(__file__), "models", "vit")
@@ -117,9 +122,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     frame_path = os.path.join(IMAGE_DIR, filename)
                     cv2.imwrite(frame_path, frame)
 
-                    # === Save to DB ===
-                    anomaly_type = most_common_label if activity_alert else list(threatening_weapons)[0]
-                    insert_anomaly(camera_id, timestamp, anomaly_type, frame_path)
+                    # === Save to DB only if there's a known anomaly ===
+                    if activity_alert:
+                        anomaly_type = most_common_label
+                    elif threatening_weapons:
+                        anomaly_type = list(threatening_weapons)[0]
+                    else:
+                        anomaly_type = None  # No valid anomaly — skip saving
+
+                    if anomaly_type:
+                        insert_anomaly(camera_id, timestamp, anomaly_type, frame_path)
 
                     # === Send Alert ===
                     await websocket.send_json({

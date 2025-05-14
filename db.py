@@ -1,18 +1,33 @@
 import psycopg2
 
 DB_CONFIG = {
-    'dbname': 'surveillance_system',
-    'user': 'your_user',
-    'password': 'your_password',
+    'dbname': 'postgres',
+    'user': 'postgres',
+    'password': '123456',
     'host': 'localhost',
     'port': 5432
 }
+def test_connection():
+    try:
+        conn = get_connection()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+                result = cur.fetchone()
+                print("✅ Database connection successful! Result:", result)
+    except Exception as e:
+        print("❌ Database connection failed:", e)
+    finally:
+        if conn:
+            conn.close()
 
 def get_connection():
+    print(f"Connecting to: dbname={DB_CONFIG['dbname']} user={DB_CONFIG['user']}")
     return psycopg2.connect(**DB_CONFIG)
 
 def insert_anomaly(camera_id, timestamp, anomaly_type, frame_path):
     conn = get_connection()
+    print(conn)
     try:
         with conn:
             with conn.cursor() as cur:
