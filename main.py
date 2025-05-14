@@ -114,13 +114,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif weapon_alert:
                     combined_alert = weapon_alert
 
-                if combined_alert != last_sent_alerts[camera_id]:
+                if combined_alert != last_sent_alerts[camera_id] and activity_alert!='Normal_Videos':
                     last_sent_alerts[camera_id] = combined_alert
 
                     # === Save frame ===
-                    filename = f"{camera_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-                    frame_path = os.path.join(IMAGE_DIR, filename)
+                    # filename = f"{camera_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                    # frame_path = os.path.join(IMAGE_DIR, filename)
+                    # cv2.imwrite(frame_path, frame)
+                    camera_folder = os.path.join(IMAGE_DIR, f"camera_{camera_id}")
+                    category_folder = os.path.join(camera_folder, combined_alert)
+
+                    # Save the frame with a timestamp-based filename
+                    frame_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                    frame_path = os.path.join(category_folder, frame_filename)
                     cv2.imwrite(frame_path, frame)
+
+
+                    # Ensure the directory structure exists
+                    os.makedirs(category_folder, exist_ok=True)
 
                     # === Save to DB only if there's a known anomaly ===
                     if activity_alert:
@@ -130,8 +141,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                         anomaly_type = None  # No valid anomaly — skip saving
 
-                    if anomaly_type:
-                        insert_anomaly(camera_id, timestamp, anomaly_type, frame_path)
+                    if anomaly_type is not None and anomaly_type != 'Normal_Videos':
+                        # === Database Update ===
+                        insert_anomaly(
+                            camera_id=camera_id,
+                            timestamp=timestamp,
+                            anomaly_type=most_common_label,
+                            frame_path=frame_path  # Save full frame path
+                        )
 
                     # === Send Alert ===
                     await websocket.send_json({

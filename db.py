@@ -1,3 +1,5 @@
+import os
+
 import psycopg2
 
 DB_CONFIG = {
@@ -27,7 +29,6 @@ def get_connection():
 
 def insert_anomaly(camera_id, timestamp, anomaly_type, frame_path):
     conn = get_connection()
-    print(conn)
     try:
         with conn:
             with conn.cursor() as cur:
@@ -35,9 +36,9 @@ def insert_anomaly(camera_id, timestamp, anomaly_type, frame_path):
                     INSERT INTO surveillance_alerts (camera_id, timestamp, anomaly_type, frame_path)
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT DO NOTHING;
-                """, (camera_id, timestamp, anomaly_type, frame_path))
+                """, (camera_id, timestamp, anomaly_type, os.path.dirname(frame_path)))
     finally:
-        conn.close()
+            conn.close()
 
 def fetch_alerts(camera_id=None, anomaly_type=None, timestamp=None):
     conn = get_connection()
