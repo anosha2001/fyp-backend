@@ -11,11 +11,21 @@ from fastapi import FastAPI, WebSocket, Query
 from fastapi.responses import JSONResponse
 from transformers import AutoProcessor, AutoModelForImageClassification
 from ultralytics import YOLO
-
 from db import insert_anomaly, fetch_alerts
-
 from db import test_connection
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI()
+# Serve the images folder
+app.mount("/images", StaticFiles(directory="C:/Users/anosha/PycharmProjects/FastAPIProject/images"), name="images")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # React app origin
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.on_event("startup")
 def startup_event():
